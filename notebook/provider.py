@@ -20,6 +20,48 @@ class ProviderError(Exception):
     pass
 
 
+# Provider response text may echo an API key or personal page contents. Only known
+# machine-readable error codes and our own messages may reach the UI or history.
+ERROR_HINTS = {
+    'invalid_api_key': 'API-ключ не принят. Проверьте его у выбранного провайдера и сохраните правильный ключ в настройках приложения.',
+    'invalid_authentication': 'Провайдер не принял авторизацию. Проверьте соответствие API-ключа выбранному адресу API.',
+    'unsupported_country_region_territory': 'Провайдер не обслуживает запросы из вашей страны или региона. Уточните доступность сервиса у провайдера или выберите другой доступный вам сервис.',
+    'country_not_supported': 'Провайдер не обслуживает запросы из вашей страны или региона. Уточните доступность сервиса у провайдера или выберите другой доступный вам сервис.',
+    'permission_denied': 'Ключу, проекту или аккаунту не разрешено это действие. Проверьте права доступа у провайдера.',
+    'insufficient_permissions': 'Ключу или проекту не хватает разрешений. Проверьте права доступа к выбранной модели у провайдера.',
+    'account_deactivated': 'Провайдер отключил аккаунт. Проверьте состояние аккаунта в его личном кабинете.',
+    'model_not_found': 'Модель не найдена или недоступна вашему проекту. Проверьте её название и разрешения у провайдера.',
+    'model_access_denied': 'У вашего аккаунта или проекта нет доступа к выбранной модели. Проверьте разрешения у провайдера.',
+    'insufficient_quota': 'Исчерпана квота API или не настроена его оплата. Проверьте баланс и лимиты в кабинете провайдера; подписка ChatGPT не включает оплату API.',
+    'billing_hard_limit_reached': 'Достигнут лимит расходов API. Проверьте баланс и лимиты в кабинете провайдера.',
+    'rate_limit_exceeded': 'Превышена частота запросов или лимит токенов API. Подождите и повторите обработку одной страницы.',
+}
+
+
+def explain_http_error(response):
+    code = None
+    try:
+        payload = response.json()
+        error = payload.get('error') if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            for candidate in (error.get('code'), error.get('type')):
+                if isinstance(candidate, str) and candidate in ERROR_HINTS:
+                    code = candidate
+                    break
+    except ValueError:
+        pass
+    prefix = f'Провайдер вернул HTTP {response.status_code}'
+    if code:
+        return f'{prefix} ({code}). {ERROR_HINTS[code]}'
+    if response.status_code == 401:
+        return 'Провайдер отклонил авторизацию (HTTP 401). Проверьте API-ключ и его соответствие выбранному адресу API. Точная причина в ответе провайдера не указана.'
+    if response.status_code == 403:
+        return prefix + '. Доступ запрещён. Причина не уточнена: проверьте разрешения аккаунта, проекта и модели, доступность сервиса в вашем регионе и правила сети.'
+    if response.status_code == 429:
+        return 'Провайдер ограничил запросы (HTTP 429). Проверьте баланс и лимиты API; если лимит временный, повторите позже.'
+    return prefix + '. Проверьте адрес API, название модели и поддержку анализа изображений/JSON.'
+
+
 class Provider:
     def __init__(self, store):
         self.store = store
@@ -39,6 +81,7 @@ class Provider:
         if not public and not key and cfg.get('encrypted_key'):
             try: key = self.fernet.decrypt(cfg['encrypted_key'].encode()).decode()
             except Exception: raise ProviderError('Не удалось прочитать ключ. Введите его заново в настройках.')
+        key = key.strip()
         cfg.pop('encrypted_key',None)
         if public:
             return cfg | {'key_configured':configured,'key_from_environment':bool(os.getenv('OCR_API_KEY'))}
@@ -55,7 +98,9 @@ class Provider:
             cfg={'base_url':base,'model':model,'consent':bool(value.get('consent'))}
             if not value.get('clear_key'):
                 if value.get('api_key'):
-                    cfg['encrypted_key']=self.fernet.encrypt(str(value['api_key']).encode()).decode()
+                    clean_key=str(value['api_key']).strip()
+                    if not clean_key: raise ValueError('Поле API-ключа содержит только пробелы. Введите ключ или оставьте поле пустым.')
+                    cfg['encrypted_key']=self.fernet.encrypt(clean_key.encode()).decode()
                 elif previous.get('encrypted_key'): cfg['encrypted_key']=previous['encrypted_key']
             db.execute('INSERT OR REPLACE INTO settings VALUES(1,?)',(dumps(cfg),))
         return self.settings(public=True)
@@ -100,9 +145,7 @@ class Provider:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120,connect=20),follow_redirects=False) as client:
                 response=await client.post(cfg['base_url']+'/chat/completions',headers={'Authorization':'Bearer '+cfg['key']},json={
                     'model':cfg['model'],'messages':messages,'response_format':{'type':'json_object'},'max_tokens':14000})
-            if response.status_code==429: raise ProviderError('Провайдер ограничил запросы или исчерпан баланс. Повторите позже.')
-            if response.status_code in (401,403): raise ProviderError('Провайдер отклонил доступ. Проверьте ключ, разрешения и сетевые правила.')
-            if response.status_code>=400: raise ProviderError(f'Провайдер вернул HTTP {response.status_code}. Проверьте адрес и поддержку анализа изображений/JSON.')
+            if response.status_code>=400: raise ProviderError(explain_http_error(response))
             if len(response.content)>4_000_000: raise ProviderError('Слишком большой ответ провайдера')
             envelope=response.json()
             choice=envelope['choices'][0]

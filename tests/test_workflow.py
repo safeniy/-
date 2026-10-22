@@ -337,3 +337,52 @@ def test_shared_context_notes_seed_once_and_remain_editable(tmp_path):
     with TestClient(create_app(root,seed_profile=True)) as c:
         notes=c.get('/api/profile').json()['notes'];assert len(notes)==3
         assert any(n['text']=='Моё уточнение' for n in notes)
+
+
+@pytest.mark.parametrize('status,code,fragment',[
+    (401,'invalid_api_key','API-ключ не принят'),
+    (403,'unsupported_country_region_territory','страны или региона'),
+    (403,'insufficient_permissions','не хватает разрешений'),
+    (403,'account_deactivated','отключил аккаунт'),
+    (404,'model_not_found','Модель не найдена'),
+    (429,'insufficient_quota','квота API'),
+    (429,'rate_limit_exceeded','частота запросов'),
+])
+def test_provider_error_codes_explain_specific_causes_without_echo(status,code,fragment):
+    import httpx
+    from notebook.provider import explain_http_error
+    response=httpx.Response(status,json={'error':{'code':code,'message':'Sensitive key sk-user-secret; personal page text'}})
+    result=explain_http_error(response)
+    assert f'HTTP {status}' in result and code in result and fragment in result
+    assert 'sk-user-secret' not in result and 'personal page text' not in result
+
+
+@pytest.mark.parametrize('payload',[
+    {'error':{'code':'sk-user-secret','message':'Bearer private-value'}},
+    {'error':'sk-user-secret'},
+    ['sk-user-secret'],
+    {'error':{'code':['private-value'],'type':'private-value'}},
+])
+def test_unknown_error_payload_does_not_expose_provider_text(payload):
+    import httpx
+    from notebook.provider import explain_http_error
+    result=explain_http_error(httpx.Response(403,json=payload))
+    assert 'HTTP 403' in result and 'Причина не уточнена' in result
+    assert 'sk-user-secret' not in result and 'private-value' not in result
+
+
+def test_non_json_error_and_known_type_are_safe():
+    import httpx
+    from notebook.provider import explain_http_error
+    assert 'HTTP 403' in explain_http_error(httpx.Response(403,text='<html>private-value</html>'))
+    result=explain_http_error(httpx.Response(429,json={'error':{'code':None,'type':'insufficient_quota','message':'private-value'}}))
+    assert 'insufficient_quota' in result and 'private-value' not in result
+
+
+def test_key_whitespace_is_trimmed_and_empty_input_does_not_destroy_binding(client):
+    settings={'base_url':'https://api.openai.com/v1','model':'gpt-4.1','api_key':'  synthetic-test-token  ','consent':False}
+    r=client.put('/api/settings',json=settings);assert r.status_code==200
+    assert client.app.state.provider.settings()['key']=='synthetic-test-token'
+    settings['api_key']='   '
+    assert client.put('/api/settings',json=settings).status_code==422
+    assert client.app.state.provider.settings()['key']=='synthetic-test-token'
