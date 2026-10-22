@@ -21,10 +21,11 @@ cd /workspace/-
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --require-hashes --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.windows.lock
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements.windows.lock
 .\.venv\Scripts\python.exe run.py
 ```
 
+Для первой установки также доступен `install-windows.bat`: он проверяет каждый шаг и останавливается при ошибке.
 После установки можно запускать `start-windows.bat`. Python 3.12 и x64 обязательны для
 этого lock-файла. Транзитивные версии и хеши Windows разрешены отдельно; работа на
 настоящей Windows-машине в облаке не проверялась.
@@ -45,13 +46,14 @@ HTTPS-прокси с паролем приложения; встроенная 
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install --require-hashes --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.lock
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
 ./run.sh
 ```
 
 Для облака доступен `uv pip sync --python /workspace/handwriting-venv/bin/python
---torch-backend cpu --require-hashes --strict requirements.lock`.
-GPU, отдельный сервер базы данных и Node.js для приложения не требуются. KaTeX и шрифты
+--require-hashes --strict requirements-dev.lock`.
+Распознавание выполняет настроенный API-провайдер. PyTorch, Transformers, GPU,
+отдельный сервер базы данных и Node.js для приложения не требуются. KaTeX и шрифты
 включены в репозиторий: формулы отображаются без обращения к CDN.
 
 ## Первый конспект
@@ -165,6 +167,12 @@ Microsoft Word в этой Linux-среде не запускался; стру�
 адреса провайдеров и небезопасный HTTP не допускаются. Для ручной работы сеть не нужна.
 
 ## Проверки
+
+Инструменты разработки устанавливаются отдельно от приложения:
+
+```bash
+uv pip sync --python /workspace/handwriting-venv/bin/python --require-hashes requirements-dev.lock
+```
 
 ```bash
 /workspace/handwriting-venv/bin/python -m pytest -q
